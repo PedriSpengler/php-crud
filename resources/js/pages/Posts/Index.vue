@@ -1,57 +1,39 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, computed } from 'vue';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { type BreadcrumbItem } from '@/types';
-import { Head } from '@inertiajs/vue3';
+import { Head, useForm, usePage, router } from '@inertiajs/vue3';
+import axios from 'axios';
 
-interface Todo {
-  id: number;
-  title: string;
-  completed: boolean;
-  hasEmail: boolean;
-  hasDeadline: boolean;
-  deadline?: string;
-  transferred: boolean;
+// Interface que define a estrutura de um Post
+interface Post {
+  id: number;          // Identificador único do post
+  title: string;       // Título do post
+  body: string;        // Conteúdo do post
+  created_at: string;  // Data de criação
+  updated_at: string;  // Data de atualização
+  deleted_at: string | null;  // Data de exclusão (soft delete)
+  expires_at: string | null;  // Data de expiração do post
+  completed: boolean;  // Status de conclusão do post
 }
 
-const todos = ref<Todo[]>([
-  {
-    id: 1,
-    title: 'Salvar, Listar (Com paginação), Editar, Excluir, Recuperar e Confirmar e Descontinuar Atividade',
-    completed: false,
-    hasEmail: true,
-    hasDeadline: false,
-    transferred: false
-  },
-  {
-    id: 2,
-    title: 'Toda atividade finalizada precisa enviar um e-mail',
-    completed: false,
-    hasEmail: true,
-    hasDeadline: false,
-    transferred: false
-  },
-  {
-    id: 3,
-    title: 'A atividade precisa ter uma data de validade, quando essa data chegar deve-se inativar a atividade (não é email)',
-    completed: false,
-    hasEmail: false,
-    hasDeadline: true,
-    deadline: '2025-06-01',
-    transferred: false
-  },
-  {
-    id: 4,
-    title: 'Transferência de atividade [por e-mail]',
-    completed: false,
-    hasEmail: true,
-    hasDeadline: false,
-    transferred: true
-  }
-]);
+// Props recebidas do componente pai
+const props = defineProps<{
+  posts: any;          // Lista de posts ativos
+  trashedPosts: any;   // Lista de posts excluídos (lixeira)
+}>();
 
-const newTodo = ref('');
-const showCompletedTasks = ref(true);
+// Estados reativos do componente
+const showCreateModal = ref(false);    // Controla a visibilidade do modal de criação/edição
+const editingPost = ref<Post | null>(null);  // Post sendo editado
+const showTrashedPosts = ref(false);   // Controla a exibição dos posts excluídos
+const filterCompleted = ref<'all' | 'completed' | 'not-completed'>('all');  // Filtro de status
+
+const form = useForm({
+  title: '',
+  body: '',
+  expires_at: ''
+});
 
 const breadcrumbs: BreadcrumbItem[] = [
   {
@@ -59,135 +41,383 @@ const breadcrumbs: BreadcrumbItem[] = [
     href: '/dashboard',
   },
   {
-    title: 'Todo List',
-    href: '/todos',
+    title: 'Posts',
+    href: '/posts',
   },
 ];
 
-const addTodo = () => {
-  if (newTodo.value.trim()) {
-    todos.value.push({
-      id: Date.now(),
-      title: newTodo.value,
-      completed: false,
-      hasEmail: false,
-      hasDeadline: false,
-      transferred: false
+const openCreateModal = () => {
+  form.reset();
+  showCreateModal.value = true;
+};
+
+const closeModal = () => {
+  showCreateModal.value = false;
+  editingPost.value = null;
+  form.reset();
+};
+
+// Função para converter datetime-local para UTC ISO string
+function toUTCString(localDateTime: string) {
+  if (!localDateTime) return '';
+  const date = new Date(localDateTime);
+  return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+const createPost = () => {
+  const originalExpiresAt = form.expires_at;
+  form.expires_at = toUTCString(form.expires_at);
+  form.post('/posts', {
+    preserveScroll: true,
+    preserveState: true,
+    onSuccess: () => {
+      closeModal();
+    },
+    onFinish: () => {
+      form.expires_at = originalExpiresAt;
+    }
+  });
+};
+
+const openEditModal = (post: Post) => {
+  editingPost.value = post;
+  form.title = post.title;
+  form.body = post.body;
+  form.expires_at = post.expires_at || '';
+  showCreateModal.value = true;
+};
+
+const updatePost = () => {
+  if (!editingPost.value) return;
+  const originalExpiresAt = form.expires_at;
+  form.expires_at = toUTCString(form.expires_at);
+  form.put(`/posts/${editingPost.value.id}`, {
+    preserveScroll: true,
+    preserveState: true,
+    onSuccess: () => {
+      closeModal();
+    },
+    onFinish: () => {
+      form.expires_at = originalExpiresAt;
+    }
+  });
+};
+
+const deletePost = (id: number) => {
+  if (confirm('Tem certeza que deseja mover este post para a lixeira?')) {
+    form.delete(`/posts/${id}`, {
+      preserveScroll: true,
+      preserveState: true
     });
-    newTodo.value = '';
   }
 };
 
-const toggleComplete = (id: number) => {
-  const todo = todos.value.find(todo => todo.id === id);
-  if (todo) {
-    todo.completed = !todo.completed;
+const restorePost = (id: number) => {
+  form.put(`/posts/${id}/restore`, {
+    preserveScroll: true,
+    preserveState: true
+  });
+};
+
+const forceDeletePost = (id: number) => {
+  if (confirm('Tem certeza que deseja excluir permanentemente este post? Esta ação não pode ser desfeita.')) {
+    form.delete(`/posts/${id}/force-delete`, {
+      preserveScroll: true,
+      preserveState: true
+    });
   }
 };
 
-const deleteTodo = (id: number) => {
-  todos.value = todos.value.filter(todo => todo.id !== id);
+// Função para atualizar o status de completed
+const toggleCompleted = async (post: Post) => {
+  try {
+    const response = await axios.put(`/posts/${post.id}/completed`, {
+      completed: !post.completed
+    });
+    post.completed = response.data.completed;
+  } catch (error) {
+    alert('Erro ao atualizar o status do checklist.');
+  }
 };
 
-const filteredTodos = computed(() => {
-  if (showCompletedTasks.value) {
-    return todos.value;
-  } else {
-    return todos.value.filter(todo => !todo.completed);
+// Computed property para ordenar e filtrar os posts
+const sortedPosts = computed(() => {
+  let posts = props.posts.data;
+
+  if (filterCompleted.value === 'completed') {
+    posts = posts.filter((post: Post) => post.completed);
+  } else if (filterCompleted.value === 'not-completed') {
+    posts = posts.filter((post: Post) => !post.completed);
   }
+
+  return posts;
+});
+
+const sortedTrashedPosts = computed(() => {
+  return props.trashedPosts.data;
 });
 </script>
 
 <template>
-  <Head title="Todo List" />
+  <Head title="Posts" />
 
   <AppLayout :breadcrumbs="breadcrumbs">
     <div class="flex h-full flex-1 flex-col gap-4 rounded-xl bg-white p-6 shadow-sm">
-      <div class="border-b border-gray-200 pb-4">
-        <h1 class="text-2xl font-bold text-gray-800">Todo List</h1>
+      <div class="flex items-center justify-between border-b border-gray-200 pb-4">
+        <h1 class="text-2xl font-bold text-gray-800">Posts</h1>
+        <div class="flex gap-4">
+          <div class="flex gap-2">
+            <button
+              @click="filterCompleted = 'all'"
+              :class="[
+                'rounded-lg px-4 py-2 text-sm font-medium',
+                filterCompleted === 'all'
+                  ? 'bg-blue-600 text-white'
+                  : 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+              ]"
+            >
+              Todos
+            </button>
+            <button
+              @click="filterCompleted = 'completed'"
+              :class="[
+                'rounded-lg px-4 py-2 text-sm font-medium',
+                filterCompleted === 'completed'
+                  ? 'bg-green-600 text-white'
+                  : 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+              ]"
+            >
+              Concluídos
+            </button>
+            <button
+              @click="filterCompleted = 'not-completed'"
+              :class="[
+                'rounded-lg px-4 py-2 text-sm font-medium',
+                filterCompleted === 'not-completed'
+                  ? 'bg-yellow-600 text-white'
+                  : 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+              ]"
+            >
+              Pendentes
+            </button>
+          </div>
+          <button
+            @click="showTrashedPosts = !showTrashedPosts"
+            class="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50"
+          >
+            {{ showTrashedPosts ? 'Mostrar Posts Ativos' : 'Mostrar Posts Excluídos' }}
+          </button>
+          <button
+            v-if="!showTrashedPosts"
+            @click="openCreateModal"
+            class="rounded-lg bg-blue-600 hover:cursor-pointer px-4 py-2 font-medium text-white hover:bg-blue-700"
+          >
+            Novo Post
+          </button>
+        </div>
       </div>
 
-      <!-- Add new todo -->
-      <div class="flex gap-2">
-        <input
-          v-model="newTodo"
-          type="text"
-          class="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-gray-800 focus:border-blue-500 focus:outline-none"
-          placeholder="Add a new task..."
-          @keyup.enter="addTodo"
-        />
-        <button
-          @click="addTodo"
-          class="hover:cursor-pointer rounded-lg bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700"
-        >
-          Add
-        </button>
-      </div>
-
-      <!-- Filter options -->
-      <div class="flex items-center gap-2 pt-2">
-        <label class="flex items-center gap-2 text-sm text-gray-600">
-          <input
-            type="checkbox"
-            v-model="showCompletedTasks"
-            class="h-4 w-4 rounded border-gray-300 text-blue-600"
-          />
-          Show completed tasks
-        </label>
-      </div>
-
-      <!-- Todo list -->
-      <div class="mt-4 flex flex-col gap-2">
-        <div v-if="filteredTodos.length === 0" class="text-center py-6 text-gray-500">
-          No tasks found
+      <!-- Lista de Posts -->
+      <div class="flex flex-col gap-4">
+        <div v-if="!showTrashedPosts && sortedPosts.length === 0" class="text-center py-6 text-gray-500">
+          Nenhum post encontrado
+        </div>
+        <div v-if="showTrashedPosts && sortedTrashedPosts.length === 0" class="text-center py-6 text-gray-500">
+          Nenhum post na lixeira
         </div>
 
-        <div
-          v-for="todo in filteredTodos"
-          :key="todo.id"
-          class="flex items-center gap-3 rounded-lg border border-gray-200 p-4 transition-colors hover:bg-gray-50"
-          :class="{ 'bg-gray-50': todo.completed }"
-        >
-          <input
-            type="checkbox"
-            :checked="todo.completed"
-            @change="toggleComplete(todo.id)"
-            class="h-5 w-5 rounded border-gray-300 text-blue-600"
-          />
-
-          <div class="flex-1">
-            <p class="text-gray-800" :class="{ 'line-through text-gray-400': todo.completed }">
-              {{ todo.title }}
-            </p>
-
-            <div class="mt-1 flex gap-2">
-              <span v-if="todo.hasEmail" class="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
-                Email
-              </span>
-              <span v-if="todo.hasDeadline" class="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
-                Deadline: {{ todo.deadline }}
-              </span>
-              <span v-if="todo.transferred" class="inline-flex items-center rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800">
-                Transferred
-              </span>
+        <template v-if="!showTrashedPosts">
+          <div
+            v-for="post in sortedPosts"
+            :key="post.id"
+            class="rounded-lg border border-gray-200 p-4"
+          >
+            <div class="flex items-start justify-between">
+              <div>
+                <div class="flex items-center gap-2">
+                  <input type="checkbox" :checked="post.completed" @change="toggleCompleted(post)" />
+                  <h2 :class="['text-lg font-semibold', post.completed ? 'line-through text-gray-400' : 'text-gray-800']">
+                    {{ post.title }}
+                  </h2>
+                </div>
+                <p class="mt-2 text-gray-600">{{ post.body }}</p>
+                <p class="mt-2 text-sm text-gray-500">
+                  Criado em: {{ new Date(post.created_at).toLocaleDateString('pt-BR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  }) }}
+                </p>
+                <p v-if="post.expires_at" class="mt-1 text-sm text-gray-500">
+                  Expira em: {{ new Date(post.expires_at).toLocaleDateString('pt-BR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  }) }}
+                </p>
+              </div>
+              <div class="flex gap-2">
+                <button
+                  @click="openEditModal(post)"
+                  class="text-gray-500 hover:text-blue-600 hover:cursor-pointer"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
+                </button>
+                <button
+                  @click="deletePost(post.id)"
+                  class="text-gray-500 hover:text-red-600 hover:cursor-pointer"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
-
-
-          <div class="flex gap-2">
-            <!-- Editar -->
-            <button class="text-gray-500 hover:text-blue-600 hover:cursor-pointer">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-              </svg>
-            </button>
-            <!-- Excluir -->
-            <button @click="deleteTodo(todo.id)" class="text-gray-500 hover:text-red-600 hover:cursor-pointer">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
+          <!-- Paginação -->
+          <div v-if="props.posts.links && props.posts.links.length > 3" class="flex justify-center mt-4 gap-1 flex-wrap">
+            <button
+              v-for="link in props.posts.links"
+              :key="link.label"
+              v-html="link.label"
+              :disabled="!link.url"
+              @click="link.url && router.visit(link.url)"
+              class="px-3 py-1 rounded border text-sm"
+              :class="{
+                'bg-blue-600 text-white': link.active,
+                'bg-white text-gray-700 hover:bg-gray-100': !link.active,
+                'opacity-50 cursor-not-allowed': !link.url
+              }"
+            />
           </div>
+        </template>
+
+        <template v-else>
+          <div
+            v-for="post in sortedTrashedPosts"
+            :key="post.id"
+            class="rounded-lg border border-gray-200 p-4 bg-gray-50"
+          >
+            <div class="flex items-start justify-between">
+              <div>
+                <h2 class="text-lg font-semibold text-gray-800">{{ post.title }}</h2>
+                <p class="mt-2 text-gray-600">{{ post.body }}</p>
+                <p class="mt-2 text-sm text-gray-500">
+                  Excluído em: {{ new Date(post.deleted_at!).toLocaleDateString('pt-BR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  }) }}
+                </p>
+              </div>
+              <div class="flex gap-2">
+                <button
+                  @click="restorePost(post.id)"
+                  class="text-gray-500 hover:text-green-600 hover:cursor-pointer"
+                  title="Restaurar post"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+                <button
+                  @click="forceDeletePost(post.id)"
+                  class="text-gray-500 hover:text-red-600 hover:cursor-pointer"
+                  title="Excluir permanentemente"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <!-- Paginação para posts excluídos -->
+          <div v-if="props.trashedPosts.links && props.trashedPosts.links.length > 3" class="flex justify-center mt-4 gap-1 flex-wrap">
+            <button
+              v-for="link in props.trashedPosts.links"
+              :key="link.label"
+              v-html="link.label"
+              :disabled="!link.url"
+              @click="link.url && router.visit(link.url)"
+              class="px-3 py-1 rounded border text-sm"
+              :class="{
+                'bg-blue-600 text-white': link.active,
+                'bg-white text-gray-700 hover:bg-gray-100': !link.active,
+                'opacity-50 cursor-not-allowed': !link.url
+              }"
+            />
+          </div>
+        </template>
+      </div>
+
+      <!-- Modal de Criar/Editar Post -->
+      <div
+        v-if="showCreateModal"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50"
+      >
+        <div class="w-full max-w-md rounded-lg bg-white p-6">
+          <h2 class="text-xl font-bold text-gray-800">
+            {{ editingPost ? 'Editar Post' : 'Novo Post' }}
+          </h2>
+          <form @submit.prevent="editingPost ? updatePost() : createPost()" class="mt-4">
+            <div class="mb-4">
+              <label class="mb-2 block text-sm font-medium text-gray-700">
+                Título
+              </label>
+              <input
+                v-model="form.title"
+                type="text"
+                class="w-full rounded-lg border border-gray-300 px-4 py-2 text-gray-900 focus:border-blue-500 focus:outline-none"
+                required
+              />
+            </div>
+            <div class="mb-4">
+              <label class="mb-2 block text-sm font-medium text-gray-700">
+                Conteúdo
+              </label>
+              <textarea
+                v-model="form.body"
+                rows="4"
+                class="w-full rounded-lg border border-gray-300 px-4 py-2 text-gray-900 focus:border-blue-500 focus:outline-none"
+                required
+              ></textarea>
+            </div>
+            <div class="mb-4">
+              <label class="mb-2 block text-sm font-medium text-gray-700">
+                Data de Expiração
+              </label>
+              <input
+                v-model="form.expires_at"
+                type="datetime-local"
+                class="w-full rounded-lg border border-gray-300 px-4 py-2 text-gray-900 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div class="flex justify-end gap-2">
+              <button
+                type="button"
+                @click="closeModal"
+                class="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                class="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700"
+                :disabled="form.processing"
+              >
+                {{ editingPost ? 'Salvar' : 'Criar' }}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </div>

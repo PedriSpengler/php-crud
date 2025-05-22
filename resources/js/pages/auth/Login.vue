@@ -1,4 +1,5 @@
 <script setup lang="ts">
+// Importação dos componentes necessários
 import InputError from '@/components/InputError.vue';
 import TextLink from '@/components/TextLink.vue';
 import { Button } from '@/components/ui/button';
@@ -9,34 +10,41 @@ import AuthBase from '@/layouts/AuthLayout.vue';
 import { Head, useForm } from '@inertiajs/vue3';
 import { LoaderCircle } from 'lucide-vue-next';
 
+// Definição das props do componente
 defineProps<{
-    status?: string;
-    canResetPassword: boolean;
+    status?: string;        // Status da mensagem de sucesso
+    canResetPassword: boolean;  // Indica se o usuário pode redefinir a senha
 }>();
 
+// Inicialização do formulário com os campos necessários
 const form = useForm({
     email: '',
     password: '',
-    remember: false,
+    remember: false,  // Opção "Lembrar-me"
 });
 
+// Função que processa o envio do formulário
 const submit = () => {
     form.post(route('login'), {
-        onFinish: () => form.reset('password'),
+        onFinish: () => form.reset('password'),  // Limpa o campo de senha após o envio
     });
 };
 </script>
 
 <template>
+    <!-- Layout base para autenticação -->
     <AuthBase title="Log in to your account" description="Enter your email and password below to log in">
         <Head title="Log in" />
 
+        <!-- Exibe mensagem de status se existir -->
         <div v-if="status" class="mb-4 text-center text-sm font-medium text-green-600">
             {{ status }}
         </div>
 
+        <!-- Formulário de login -->
         <form @submit.prevent="submit" class="flex flex-col gap-6">
             <div class="grid gap-6">
+                <!-- Campo de email -->
                 <div class="grid gap-2">
                     <Label for="email">Email address</Label>
                     <Input
@@ -52,9 +60,11 @@ const submit = () => {
                     <InputError :message="form.errors.email" />
                 </div>
 
+                <!-- Campo de senha -->
                 <div class="grid gap-2">
                     <div class="flex items-center justify-between">
                         <Label for="password">Password</Label>
+                        <!-- Link para recuperação de senha -->
                         <TextLink v-if="canResetPassword" :href="route('password.request')" class="text-sm" :tabindex="5">
                             Forgot password?
                         </TextLink>
@@ -71,6 +81,7 @@ const submit = () => {
                     <InputError :message="form.errors.password" />
                 </div>
 
+                <!-- Checkbox "Lembrar-me" -->
                 <div class="flex items-center justify-between">
                     <Label for="remember" class="flex items-center space-x-3">
                         <Checkbox id="remember" v-model="form.remember" :tabindex="3" />
@@ -78,12 +89,14 @@ const submit = () => {
                     </Label>
                 </div>
 
+                <!-- Botão de submit com indicador de carregamento -->
                 <Button type="submit" class="mt-4 w-full" :tabindex="4" :disabled="form.processing">
                     <LoaderCircle v-if="form.processing" class="h-4 w-4 animate-spin" />
                     Log in
                 </Button>
             </div>
 
+            <!-- Link para registro de nova conta -->
             <div class="text-center text-sm text-muted-foreground">
                 Don't have an account?
                 <TextLink :href="route('register')" :tabindex="5">Sign up</TextLink>
